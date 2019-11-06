@@ -1,0 +1,16 @@
+[33m
+##############################################################
+#
+#   !!! MONGOOSE WARNING !!!
+#
+#   This is an UNSTABLE release of Mongoose.
+#   Unstable releases are available for preview/testing only.
+#   DO NOT run this in production.
+#
+##############################################################
+[0m
+=========================================
+Server running at http://151.80.38.74:3000
+Running in: live mode.
+=========================================
+latestNews: deleted

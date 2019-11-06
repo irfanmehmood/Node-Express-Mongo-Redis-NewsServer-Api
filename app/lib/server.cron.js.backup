@@ -1,0 +1,306 @@
+var mongoose = require('mongoose');
+var Schema = require('../models/feedItems.server.model');
+var FeedItemModel = mongoose.model('FeedItemModel');
+var redis = require('redis');
+var client = redis.createClient(); //creates a new client
+
+
+var _newsCategories;
+var _newsSources;
+var _newsFeeds;
+var request = require('request');
+//var jsdom = require("jsdom");
+
+
+function _get_newsCategories() {
+
+    request('http://127.0.0.1:3000/api/v1.0/feed/categories', function (error, response, body) {
+        if (!error && response.statusCode == 200) {
+            _newsCategories = JSON.parse(body);
+            //console.log(body) // Show the HTML for the Google homepage.
+        }
+        _get_newsSources();
+
+    });
+
+}
+
+function _get_newsSources() {
+
+    request('http://127.0.0.1:3000/api/v1.0/feed/sources', function (error, response, body) {
+        if (!error && response.statusCode == 200) {
+            _newsSources = JSON.parse(body);
+            //console.log(body) // Show the HTML for the Google homepage.
+        }
+        _get_newsFeeds();
+    });
+
+}
+
+function _get_newsFeeds() {
+
+    request('http://127.0.0.1:3000/api/v1.0/feed/list', function (error, response, body) {
+        if (!error && response.statusCode == 200) {
+            _newsFeeds = JSON.parse(body);
+            //console.log(body) // Show the HTML for the Google homepage.
+        }
+
+        _finish();
+    });
+
+}
+
+var ban_list_bbc = ["VIDEO: ", "In pictures:"];
+function _news_item_in_ignore_list(item) {
+
+    var arrayLength = ban_list_bbc.length;
+
+    switch (item.company) {
+
+        case "bbc":
+            //console.log("checking bbc");
+            for (var i = 0; i < arrayLength; i++) {
+
+                //console.log("Comparing: " + item.title + " with : " + ban_list_bbc[i]);
+                if (item.title.search(ban_list_bbc[i]) >= 0){
+                    //console.log("Found");
+                    return true;
+                }
+            }
+
+            break;
+
+    }
+
+    return false;
+}
+
+
+function _format_content($, item){
+
+    //Remove all images
+    $("img").remove();
+    $("script").remove();
+    $("a").remove();
+    $("iframe").remove();
+    var final_body = '';
+
+
+
+
+
+
+    switch (item.company) {
+
+        case "bbc":
+
+            $("figure").remove();
+
+            $(".story-body__inner").each(function() {
+                //console.log(" -", $(this).text());
+                final_body =  $(this).html();
+            });
+            break;
+
+        default:
+            $("body").each(function() {
+                //console.log(" -", $(this).text());
+                final_body =  $(this).text();
+            });
+            break;
+
+    }
+
+
+
+
+    return final_body;
+
+}
+
+_getFeedItemsForFeed = function(feed) {
+
+    var FeedParser = require('feedparser');
+    var httpRequest = require('request');
+
+    var c = 0;
+
+    var options = [];
+
+    var httpRequestResponse = httpRequest(feed.url, {timeout: 1000, pool: false});
+    httpRequestResponse.setMaxListeners(50);
+
+
+
+    var feedparser = new FeedParser([options]);
+
+    httpRequestResponse.on('error', function (error) {
+        // handle any request errors
+    });
+
+    httpRequestResponse.on('response', function (res) {
+        var stream = this;
+
+        if (res.statusCode != 200) return this.emit('error', new Error('Bad status code'));
+
+        stream.pipe(feedparser);
+    });
+
+
+    feedparser.on('error', function(error) {
+        // always handle errors
+    });
+
+    feedparser.on('readable', function() {
+
+        // This is where the action is!
+        var stream = this
+            , meta = this.meta // **NOTE** the "meta" is always available in the context of the feedparser instance
+            , item;
+
+
+        while (item = stream.read()) {
+
+            item.company = feed.name;
+            item.category = feed.category;
+            item.companySlug = feed.slug;
+            var newsItem = item;
+           // console.log(url);
+            client.get('url:' + newsItem.link, function(err, urlFound) {
+                if (urlFound == null) {
+
+                    //console.log("trying");
+                    var feedItem = new FeedItemModel(newsItem);
+
+                    if (_news_item_in_ignore_list(feedItem) === false){
+
+                        request(feedItem.link, function (error, response, body) {
+
+                            if (!error && response.statusCode == 200) {
+                                feedItem.description = body;
+                                //console.log(body) // Show the HTML for the Google homepage.
+
+                                //After extracting page HTML we save the item in redis and database
+                                client.set('url:' + feedItem.link, 1, function(err, reply) {
+
+                                    //Not Added try to add it
+
+                                    if (err) {
+                                        console.log("Redis Save Failed");
+                                        console.log("Cleaner");
+
+                                    } else {
+                                        //Not Added try to add it
+                                        feedItem.save(function(err) {
+
+                                            if (err) {
+                                                console.log(getErrorMessage(err) + " Failed");
+
+                                            } else {
+                                                console.log("Added->" + feedItem.title);
+                                            }
+                                        });
+
+                                    }
+                                });
+                            }
+                        });
+                    } else {
+
+                        //Item is an invalid item, drop it
+                        //We also save it in the cache so its skipped next time
+
+                        client.set('url:' + newsItem.link, 1, function(err, reply) {
+
+                            console.log("Ignore list: Item skipped");
+
+                        });
+
+                    }
+
+                } else {
+                    //console.log("Redis Duplicate: Item skipped");
+                }
+
+            });
+
+        }
+
+    });
+
+};
+
+
+var getErrorMessage = function(err) {
+
+    if ( err && err.code !== 11000 ) {
+        console.log(err);
+        console.log(err.code);
+        return ('Another error showed up');
+    }
+
+    //duplicate key
+    if ( err && err.code === 11000 ) {
+        return('error', 'URL already exists');
+    }
+};
+
+function _finish() {
+
+    if (global.cronCounter >= _newsCategories.length) {
+        global.cronCounter = 0;
+    }
+    //console.log(_newsFeeds);
+    var category = _newsCategories[global.cronCounter]._id;
+    //console.log("----------------------");
+    //console.log("Category: " + category);
+    //console.log("----------------------");
+    for(var i = 0; i < _newsFeeds.length; i++) {
+
+        var feed = _newsFeeds[i];
+
+        if (feed.category == category) {
+
+            //console.log(feed.name + " : " + feed.url);
+            _getFeedItemsForFeed(feed);
+        }
+
+    }
+
+    //console.log();
+    //console.log();
+    global.cronCounter = global.cronCounter + 1;
+}
+
+
+function _start() {
+    _get_newsCategories();
+}
+
+exports.run = function() {
+   _start();
+};
+
+exports.rebuild = function() {
+
+
+
+    client.del('latestNews', function(err, reply) {
+        console.log("latestNews: deleted");
+
+        client.del('headlineNews', function(err, reply) {
+            console.log("headlineNews: deleted");
+        });
+
+    });
+
+};
+
+
+
+
+
+
+
+//Set Initial counter
+global.cronCounter = 0;

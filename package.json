@@ -1,0 +1,14 @@
+{
+  "name": "RSS",
+  "version": "0.0.3",
+  "dependencies": {
+    "cheerio": "^0.19.0",
+    "cron": "^1.0.9",
+    "express": "~4.*",
+    "feedparser": "^1.1.4",
+    "mongoose": "~3.7.0",
+    "mongoose-paginate": "^4.2.0",
+    "redis": "^2.3.0",
+    "request": "^2.65.0"
+  }
+}
